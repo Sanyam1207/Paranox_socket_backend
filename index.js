@@ -8,15 +8,18 @@ const pako = require("pako");
 require("dotenv").config();
 // If you don't use GoogleGenerativeAI in production, you can remove related code
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const connectDB = require('./lib/dbConnect');
+const { default: Classes } = require("./models/Classes");
 
 const server = http.createServer(app);
+connectDB();
 
 app.use(
   cors({
     origin: [
       "*",
       "https://sih-2025-white-board.vercel.app",
-      "http://localhost:3000",
+      "http://localhost:3001",
       "https://localhost:3000",
     ],
   })
@@ -39,6 +42,10 @@ app.use(express.json());
  * Note: This is memory-only. For persistence, move to DB.
  */
 let rooms = {};
+
+// setInterval(() => {
+//   console.log("\n\nCurrent rooms state:", JSON.stringify(rooms));
+// }, 5000);
 
 // Utilities
 const compress = (data) => {
@@ -80,6 +87,8 @@ const io = new Server(server, {
       "https://sih-2025-white-board.vercel.app",
       "http://localhost:3000",
       "https://localhost:3000",
+      "http://localhost:3001",
+
     ],
     methods: ["GET", "POST"],
   },
@@ -211,6 +220,54 @@ io.on("connection", (socket) => {
         UserID
       )}. Slides: ${rooms[roomID].slides.length}`
     );
+  });
+
+  socket.on("whiteboard:saveAll", async ({ roomID }) => {
+    try {
+      const roomData = rooms[roomID]; // In-memory slides + elements
+      if (!roomData) {
+        return socket.emit("error", "Room data not found in memory");
+      }
+
+      // Map frontend slides to backend schema
+      const slides = roomData.slides.map((slide) => ({
+        id: slide.slideId, // frontend slideId -> backend id
+        title: slide.title || "Untitled Slide",
+        elements: slide.elements.map((el) => ({
+          type: el.type,
+          points: el.points || [],
+          x1: el.x1,
+          y1: el.y1,
+          x2: el.x2,
+          y2: el.y2,
+          color: el.color,
+          strokeWidth: el.strokeWidth,
+          fill: el.fill,
+          fillStyle: el.fillStyle, // must match frontend
+          src: el.src,
+          text: el.text,
+          startTime: el.startTime,
+        })),
+      }));
+
+      // Save or update class document
+      const classDoc = await Classes.findOneAndUpdate(
+        { roomID },
+        {
+          slides,
+          title: roomData.title || "Untitled Class",
+          teacher: roomData.teacher || "Unknown Teacher",
+          date: roomData.date || new Date(),
+        },
+        { new: true, upsert: true }
+      );
+
+      socket.emit("whiteboard:saved", { success: true, classId: classDoc._id });
+      console.log(`✅ Whiteboard saved for room ${roomID}`);
+    } catch (err) {
+      console.error("❌ Failed to save whiteboard:", err);
+      socket.emit("whiteboard:saved", { success: false, error: err.message });
+    }
   });
 
   // Create new slide
@@ -511,6 +568,31 @@ io.on("connection", (socket) => {
 // Simple REST endpoints for debug / minimal API
 app.get("/", (req, res) => {
   res.send("Hello server is working");
+});
+
+app.get("/api/classes/:roomID", async (req, res) => {
+  try {
+    const { roomID } = req.params;
+
+    const classDoc = await Classes.findOne({ roomID });
+    console.log("Fetched class document:", JSON.stringify(classDoc));
+
+    if (!classDoc) {
+      return res.status(404).json({ error: "Class not found" });
+    }
+
+    res.json({
+      roomID,
+      title: classDoc.title,
+      teacher: classDoc.teacher,
+      date: classDoc.date,
+      audioUrl: classDoc.AudioURL,
+      slides: classDoc.slides,
+    });
+  } catch (err) {
+    console.error("❌ Error fetching class:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 app.get("/debug/rooms", (req, res) => {
