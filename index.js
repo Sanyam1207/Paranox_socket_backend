@@ -50,6 +50,9 @@ app.use(express.json());
  */
 let rooms = {};
 const pdfChunkStore = {};
+setInterval(() => {
+  console.log("\n\n rooms state:", JSON.stringify(rooms));
+}, 3000);
 
 // setInterval(() => {
 //   console.log("\n\nCurrent rooms state:", JSON.stringify(rooms));
@@ -136,7 +139,7 @@ async function processFullPdf(io, socket, roomID, fileName, fileBuffer) {
             x1: 10,
             y1: 10,
             width: width,
-            height: height/2,
+            height: height / 2,
             rotation: 0,
             locked: false,
           },
@@ -210,7 +213,7 @@ async function convertPdfToImages(pdfPath, outputDir) {
   // Upload full PDF to Cloudinary
   const uploadRes = await cloudinary.uploader.upload(pdfPath, {
     resource_type: "image", // IMPORTANT for PDF
-    format: 'pdf',
+    format: "pdf",
     folder: "pdf-temp",
     use_filename: true,
     unique_filename: true,
@@ -694,29 +697,90 @@ io.on("connection", (socket) => {
     console.log(`Room ${roomID} switched to slide ${newIndex}`);
   });
 
-  socket.on("emit-payload", (sizeKB) => {
+  socket.on("emit-payload", ({ sizeKB, roomID }) => {
     console.log(`\n\n\nPayload size from client: ${sizeKB} KB\n\n\n`);
-  })
+    socket.to(roomID).emit("payload-size", { payloadSize: sizeKB });
+  });
 
   // Client updates a single element (must provide elementData and optionally slideId/slideIndex)
+  // socket.on(
+  //   "element-update",
+  //   ({ elementData, roomID, slideId = null, slideIndex = null }) => {
+  //     if (!elementData || !roomID) return;
+  //     // console.log("Server received element:", elementData.type, elementData.id);
+  //     if (elementData.type === "image") {
+  //       console.log(
+  //         "Image details:",
+  //         elementData.src,
+  //         elementData.width,
+  //         elementData.height
+  //       );
+  //     }
+  //     updateElementInRoomSlide(elementData, roomID, { slideId, slideIndex });
+  //     // Broadcast update to others in room (include slideId so clients know which slide to update)
+  //     socket.broadcast
+  //       .to(roomID)
+  //       .emit("element-updated", { elementData, slideId, slideIndex });
+  //   }
+  // );
+
   socket.on(
     "element-update",
-    ({ elementData, roomID, slideId = null, slideIndex = null }) => {
-      if (!elementData || !roomID) return;
-      // console.log("Server received element:", elementData.type, elementData.id);
-      if (elementData.type === "image") {
-        console.log(
-          "Image details:",
-          elementData.src,
-          elementData.width,
-          elementData.height
-        );
+    ({
+      elementData,
+      compressedElementData,
+      roomID,
+      slideId = null,
+      slideIndex = null,
+    }) => {
+      if (!roomID) return;
+
+      // If compressed data provided -> forward compressed to others AND decompress to update memory
+      if (compressedElementData && Array.isArray(compressedElementData)) {
+        try {
+          // compressedElementData is an Array of bytes (numbers)
+          const uint8 = Uint8Array.from(compressedElementData);
+          // Decompress using pako
+          const json = pako.inflate(uint8, { to: "string" });
+          const parsed = JSON.parse(json);
+
+          // Update server in-memory state
+          updateElementInRoomSlide(parsed, roomID, { slideId, slideIndex });
+
+          // Forward compressed bytes to others in room unchanged
+          socket.broadcast.to(roomID).emit("element-updated", {
+            compressedElementData,
+            slideId,
+            slideIndex,
+          });
+
+          console.log(
+            `Server received compressed element-update id=${parsed.id} forwarded to room ${roomID}`
+          );
+          return;
+        } catch (err) {
+          console.error(
+            "Server failed to decompress compressedElementData:",
+            err
+          );
+          // fallback to treating as raw below
+        }
       }
-      updateElementInRoomSlide(elementData, roomID, { slideId, slideIndex });
-      // Broadcast update to others in room (include slideId so clients know which slide to update)
-      socket.broadcast
-        .to(roomID)
-        .emit("element-updated", { elementData, slideId, slideIndex });
+
+      // Fallback: raw elementData (backwards compatibility)
+      if (elementData) {
+        try {
+          updateElementInRoomSlide(elementData, roomID, {
+            slideId,
+            slideIndex,
+          });
+          socket.broadcast
+            .to(roomID)
+            .emit("element-updated", { elementData, slideId, slideIndex });
+        } catch (err) {
+          console.error("Server error processing raw elementData:", err);
+        }
+      }
     }
   );
 
@@ -791,14 +855,18 @@ io.on("connection", (socket) => {
     }
   );
 
-  socket.on("user-disconnecting", ({roomID, userID}) => {
+  socket.on("user-disconnecting", ({ roomID, userID }) => {
     console.log(`\n\n\n${userID} is disconnecting from room ${roomID}\n\n\n`);
-    io.to(roomID).emit("disconnect-and-remove-cursor", {userID})
-  })
+    io.to(roomID).emit("disconnect-and-remove-cursor", { userID });
+  });
 
   // Cursor position broadcast (attached to room)
   socket.on("cursor-position", ({ cursorData, roomID }) => {
-    console.log(`\n\nCursor from user ${cursorData.userId} in room ${roomID}: x=${cursorData.x}, y=${cursorData.y}`);
+    console.log(
+      `\n\nCursor from user ${JSON.stringify(
+        cursorData
+      )} in room ${roomID}: x=${cursorData.x}, y=${cursorData.y}`
+    );
     socket.broadcast
       .to(roomID)
       .emit("cursor-position-backend", { ...cursorData });
