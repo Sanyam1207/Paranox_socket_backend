@@ -694,12 +694,16 @@ io.on("connection", (socket) => {
     console.log(`Room ${roomID} switched to slide ${newIndex}`);
   });
 
+  socket.on("emit-payload", (sizeKB) => {
+    console.log(`\n\n\nPayload size from client: ${sizeKB} KB\n\n\n`);
+  })
+
   // Client updates a single element (must provide elementData and optionally slideId/slideIndex)
   socket.on(
     "element-update",
     ({ elementData, roomID, slideId = null, slideIndex = null }) => {
       if (!elementData || !roomID) return;
-      console.log("Server received element:", elementData.type, elementData.id);
+      // console.log("Server received element:", elementData.type, elementData.id);
       if (elementData.type === "image") {
         console.log(
           "Image details:",
@@ -735,9 +739,9 @@ io.on("connection", (socket) => {
       socket.broadcast
         .to(roomID)
         .emit("elements-updated", { compressed, slideId: slide.id });
-      console.log(
-        `Elements replaced for room ${roomID} slide ${slide.id}. Count: ${slide.elements.length}`
-      );
+      // console.log(
+      //   `Elements replaced for room ${roomID} slide ${slide.id}. Count: ${slide.elements.length}`
+      // );
     }
   );
 
@@ -787,11 +791,17 @@ io.on("connection", (socket) => {
     }
   );
 
+  socket.on("user-disconnecting", ({roomID, userID}) => {
+    console.log(`\n\n\n${userID} is disconnecting from room ${roomID}\n\n\n`);
+    io.to(roomID).emit("disconnect-and-remove-cursor", {userID})
+  })
+
   // Cursor position broadcast (attached to room)
   socket.on("cursor-position", ({ cursorData, roomID }) => {
+    console.log(`\n\nCursor from user ${cursorData.userId} in room ${roomID}: x=${cursorData.x}, y=${cursorData.y}`);
     socket.broadcast
       .to(roomID)
-      .emit("cursor-position", { ...cursorData, userId: socket.userID });
+      .emit("cursor-position-backend", { ...cursorData });
   });
 
   socket.on("remove-cursor-position", ({ roomID, userId }) => {

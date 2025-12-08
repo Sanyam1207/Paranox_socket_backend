@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+const mongoose = require('mongoose')
 
 // Each point in a pencil/eraser stroke
 const pointSchema = new mongoose.Schema({
@@ -46,4 +46,4 @@ const classesSchema = new mongoose.Schema({
 
 const Classes = mongoose.models.Classes || mongoose.model("Classes", classesSchema);
 
-export default Classes;
+module.exports = Classes;
