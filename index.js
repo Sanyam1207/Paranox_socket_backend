@@ -10,10 +10,12 @@ require("dotenv").config();
 // If you don't use GoogleGenerativeAI in production, you can rem related code
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const connectDB = require("./lib/dbConnect");
-const { default: Classes } = require("./models/Classes");
+// const { default: Classes } = require("./models/Classes");
+const Classes = require("./models/Classes");
 const fs = require("fs-extra");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
+const { default: axios } = require("axios");
 // const pdfPoppler = require("pdf-poppler");
 const cloudinary = require("cloudinary").v2;
 
@@ -28,6 +30,7 @@ app.use(
       "https://sih-2025-whiteboard-frontend.vercel.app",
       "http://localhost:3001",
       "https://localhost:3000",
+      "http://localhost:3000"
     ],
   })
 );
@@ -228,7 +231,24 @@ async function savePdfTemp(fileDataArray) {
   return { pdfPath, tmpDir };
 }
 
+async function uploadImageFromURL(imageUrl) {
+  try {
+    const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
 
+    const base64Image = `data:image/jpeg;base64,${Buffer.from(
+      response.data
+    ).toString("base64")}`;
+
+    const uploaded = await cloudinary.uploader.upload(base64Image, {
+      folder: "whiteboard_images",
+    });
+
+    return uploaded.secure_url;
+  } catch (err) {
+    console.error("Cloudinary upload failed:", err);
+    return null;
+  }
+}
 
 // helper: convert pdf to images using pdf-poppler
 // async function convertPdfToImages(pdfPath, outputDir) {
@@ -673,6 +693,7 @@ io.on("connection", (socket) => {
       if (!roomData) {
         return socket.emit("error", "Room data not found in memory");
       }
+      console.log(`\n\ndosandoa \n\n ${JSON.stringify(roomData)}\n\n`);
 
       // Map frontend slides to backend schema
       const slides = roomData.slides.map((slide) => ({
@@ -789,31 +810,9 @@ io.on("connection", (socket) => {
     socket.to(roomID).emit("payload-size", { payloadSize: sizeKB });
   });
 
-  // Client updates a single element (must provide elementData and optionally slideId/slideIndex)
-  // socket.on(
-  //   "element-update",
-  //   ({ elementData, roomID, slideId = null, slideIndex = null }) => {
-  //     if (!elementData || !roomID) return;
-  //     // console.log("Server received element:", elementData.type, elementData.id);
-  //     if (elementData.type === "image") {
-  //       console.log(
-  //         "Image details:",
-  //         elementData.src,
-  //         elementData.width,
-  //         elementData.height
-  //       );
-  //     }
-  //     updateElementInRoomSlide(elementData, roomID, { slideId, slideIndex });
-  //     // Broadcast update to others in room (include slideId so clients know which slide to update)
-  //     socket.broadcast
-  //       .to(roomID)
-  //       .emit("element-updated", { elementData, slideId, slideIndex });
-  //   }
-  // );
-
   socket.on(
     "element-update",
-    ({
+    async ({
       elementData,
       compressedElementData,
       roomID,
@@ -822,45 +821,54 @@ io.on("connection", (socket) => {
     }) => {
       if (!roomID) return;
 
-      // If compressed data provided -> forward compressed to others AND decompress to update memory
+      // -------- CASE 1: Compressed (unchanged) -------- //
       if (compressedElementData && Array.isArray(compressedElementData)) {
         try {
-          // compressedElementData is an Array of bytes (numbers)
           const uint8 = Uint8Array.from(compressedElementData);
-          // Decompress using pako
           const json = pako.inflate(uint8, { to: "string" });
           const parsed = JSON.parse(json);
 
-          // Update server in-memory state
           updateElementInRoomSlide(parsed, roomID, { slideId, slideIndex });
 
-          // Forward compressed bytes to others in room unchanged
           socket.broadcast.to(roomID).emit("element-updated", {
             compressedElementData,
             slideId,
             slideIndex,
           });
 
-          console.log(
-            `Server received compressed element-update id=${parsed.id} forwarded to room ${roomID}`
-          );
           return;
         } catch (err) {
-          console.error(
-            "Server failed to decompress compressedElementData:",
-            err
-          );
-          // fallback to treating as raw below
+          console.error("Failed compressed decompress:", err);
         }
       }
 
-      // Fallback: raw elementData (backwards compatibility)
+      // ---------- CASE 2: RAW ELEMENT DATA (IMAGE URL HANDLING HERE) ---------- //
       if (elementData) {
         try {
+          // Detect image having http URL
+          if (
+            elementData.type === "image" &&
+            typeof elementData.src === "string" &&
+            elementData.src.startsWith("http")
+          ) {
+            console.log("Downloading & uploading image:", elementData.src);
+
+            const cloudUrl = await uploadImageFromURL(elementData.src);
+            console.log("\n\nCloudinary URL:\n\n", cloudUrl);
+
+            if (cloudUrl) {
+              elementData.src = cloudUrl;
+              console.log("Replaced with Cloudinary:", cloudUrl);
+            }
+          }
+
+          // Update server memory
           updateElementInRoomSlide(elementData, roomID, {
             slideId,
             slideIndex,
           });
+
+          // Emit final element with updated Cloudinary src
           socket.broadcast
             .to(roomID)
             .emit("element-updated", { elementData, slideId, slideIndex });
@@ -976,49 +984,6 @@ io.on("connection", (socket) => {
       .emit("quiz", { correctAnswer, question, options, roomID });
   });
 
-  // File transfer handlers
-  // socket.on("file", ({ roomID, fileName, fileType, fileData }) => {
-  //   console.log(
-  //     `File transfer - Name: ${fileName}, Type: ${fileType}, Room: ${roomID}`
-  //   );
-  //   if (isMediaFile(fileType)) {
-  //     console.log("Media file detected - applying compression");
-  //     const compressedFile = compress({ fileName, fileType, fileData });
-  //     socket.broadcast.to(roomID).emit("file-media", compressedFile);
-  //   } else if (isUrlOrTextFile(fileType, fileName)) {
-  //     console.log("URL/Text file detected - sending without compression");
-  //     socket.broadcast
-  //       .to(roomID)
-  //       .emit("file-url", { fileName, fileType, fileData });
-  //   } else {
-  //     console.log("Other file type detected - applying compression as default");
-  //     const compressedFile = compress({ fileName, fileType, fileData });
-  //     socket.broadcast.to(roomID).emit("file-other", compressedFile);
-  //   }
-  //   // Fallback generic event (fixed spelling)
-  //   socket.broadcast
-  //     .to(roomID)
-  //     .emit("file-received", { fileName, fileType, fileData });
-  //   console.log(
-  //     `Broadcasting file to ${
-  //       rooms[roomID]?.users?.length || 0
-  //     } users in room ${roomID}`
-  //   );
-  // });
-
-  // socket.on("upload-pdf", ({ roomID, fileName, fileType, fileData }) => {
-  //   console.log(`PDF uploaded by client: ${fileName}`);
-
-  //   // Broadcast to all other users
-  //   io.to(roomID).emit("pdf-received", {
-  //     roomID,
-  //     fileName,
-  //     fileType,
-  //     fileData,
-  //   });
-  // });
-
-  // Website sharing
   socket.on("share-website", ({ websiteUrl, roomID, userID }) => {
     console.log(
       `User ${userID} is sharing website: ${websiteUrl} in room: ${roomID}`
@@ -1102,11 +1067,12 @@ app.get("/", (req, res) => {
   res.send("Hello server is working");
 });
 
-app.get("/api/classes/:roomID", async (req, res) => {
+app.get("/api/classes/:roomId", async (req, res) => {
   try {
-    const { roomID } = req.params;
+    const { roomId } = req.params;
+    console.log("Fetching class for roomId:", roomId);
 
-    const classDoc = await Classes.findOne({ roomID });
+    const classDoc = await Classes.findById(roomId);
     console.log("Fetched class document:", JSON.stringify(classDoc));
 
     if (!classDoc) {
@@ -1114,7 +1080,7 @@ app.get("/api/classes/:roomID", async (req, res) => {
     }
 
     res.json({
-      roomID,
+      roomID: classDoc.roomID,
       title: classDoc.title,
       teacher: classDoc.teacher,
       date: classDoc.date,
